@@ -12,6 +12,7 @@ import { describeError } from "./aspire-popover";
 import { findScrollElement, listenForUserScroll, observeVisibility, type ScrollElement } from "./dom-scroll";
 import { logsTarget } from "./logs-target";
 import { MONO, TERMINAL_FONT_SIZE } from "./terminal-font";
+import { isTouchLayout, TouchContext, useTouch } from "./touch";
 
 export const LOGS_PANEL_ID = "aspire-logs";
 
@@ -73,6 +74,7 @@ function time(timestamp: string | null) {
 }
 
 function Chip({ theme, label, active, color, onPress }: { theme: PluginTheme; label: string; active: boolean; color?: string; onPress(): void }) {
+  const touch = useTouch();
   return (
     <Pressable
       accessibilityRole="tab"
@@ -82,36 +84,37 @@ function Chip({ theme, label, active, color, onPress }: { theme: PluginTheme; la
         flexDirection: "row",
         alignItems: "center",
         gap: 6,
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 12,
+        paddingHorizontal: touch ? 14 : 12,
+        paddingVertical: touch ? 10 : 6,
+        borderRadius: touch ? 18 : 14,
         borderWidth: 1,
         borderColor: active ? theme.colors.accent : theme.colors.border,
         backgroundColor: active ? theme.colors.surface2 : pressed ? theme.colors.surface1 : "transparent",
       })}
     >
-      {color ? <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: color }} /> : null}
-      <Text style={{ fontSize: 12, color: theme.colors.foreground }}>{label}</Text>
+      {color ? <View style={{ width: touch ? 8 : 6, height: touch ? 8 : 6, borderRadius: 4, backgroundColor: color }} /> : null}
+      <Text style={{ fontSize: touch ? 14 : 13, color: theme.colors.foreground }}>{label}</Text>
     </Pressable>
   );
 }
 
 function ToolButton({ theme, label, active, onPress }: { theme: PluginTheme; label: string; active?: boolean; onPress(): void }) {
+  const touch = useTouch();
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
       style={({ pressed }) => ({
-        paddingHorizontal: 8,
-        paddingVertical: 4,
+        paddingHorizontal: touch ? 14 : 10,
+        paddingVertical: touch ? 10 : 6,
         borderRadius: 6,
         borderWidth: 1,
         borderColor: active ? theme.colors.accent : theme.colors.border,
         backgroundColor: pressed ? theme.colors.surface2 : theme.colors.surface1,
       })}
     >
-      <Text style={{ fontSize: 12, color: active ? theme.colors.accent : theme.colors.foreground }}>{label}</Text>
+      <Text style={{ fontSize: touch ? 14 : 13, color: active ? theme.colors.accent : theme.colors.foreground }}>{label}</Text>
     </Pressable>
   );
 }
@@ -207,6 +210,7 @@ export function createLogsPanel(client: PluginClientContext) {
     const { following } = tab;
     const revealed = loaded && revealedTab === tab;
     const { resources, filter, showTimestamps } = view;
+    const touch = isTouchLayout(layout);
     const update = (change: () => void) => {
       change();
       rerender();
@@ -433,121 +437,124 @@ export function createLogsPanel(client: PluginClientContext) {
     const openUrl = (url: string) => void openExternalUrl(url).catch((e: unknown) => setError(describeError(e)));
 
     return (
-      <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
-        <View style={{ gap: 8, padding: layout.compact ? 8 : 12, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
-            <Chip theme={theme} label="All" active={resource === null} onPress={() => logsTarget.set(workspaceId, null)} />
-            {resources.map((r) => (
-              <Chip
-                key={r.name}
-                theme={theme}
-                label={r.displayName}
-                active={resource === r.name}
-                color={stateColor(theme, r)}
-                onPress={() => logsTarget.set(workspaceId, r.name)}
+      <TouchContext.Provider value={touch}>
+        <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+          <View style={{ gap: 8, padding: layout.compact ? 8 : 12, borderBottomWidth: 1, borderBottomColor: theme.colors.border }}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+              <Chip theme={theme} label="All" active={resource === null} onPress={() => logsTarget.set(workspaceId, null)} />
+              {resources.map((r) => (
+                <Chip
+                  key={r.name}
+                  theme={theme}
+                  label={r.displayName}
+                  active={resource === r.name}
+                  color={stateColor(theme, r)}
+                  onPress={() => logsTarget.set(workspaceId, r.name)}
+                />
+              ))}
+            </ScrollView>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: touch ? 8 : 6, flexWrap: touch ? "wrap" : "nowrap" }}>
+              <TextInput
+                value={filter}
+                onChangeText={(text) => update(() => (view.filter = text))}
+                placeholder="Filter"
+                placeholderTextColor={theme.colors.foregroundMuted}
+                accessibilityLabel="Filter log lines"
+                style={{
+                  flex: 1,
+                  ...(touch ? { flexBasis: "100%" } : null),
+                  fontSize: touch ? 14 : 13,
+                  paddingHorizontal: touch ? 12 : 10,
+                  paddingVertical: touch ? 10 : 6,
+                  borderRadius: 6,
+                  borderWidth: 1,
+                  borderColor: theme.colors.border,
+                  color: theme.colors.foreground,
+                  backgroundColor: theme.colors.surface1,
+                }}
               />
-            ))}
-          </ScrollView>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <TextInput
-              value={filter}
-              onChangeText={(text) => update(() => (view.filter = text))}
-              placeholder="Filter"
-              placeholderTextColor={theme.colors.foregroundMuted}
-              accessibilityLabel="Filter log lines"
-              style={{
-                flex: 1,
-                fontSize: 12,
-                paddingHorizontal: 8,
-                paddingVertical: 4,
-                borderRadius: 6,
-                borderWidth: 1,
-                borderColor: theme.colors.border,
-                color: theme.colors.foreground,
-                backgroundColor: theme.colors.surface1,
-              }}
-            />
-            <ToolButton theme={theme} label="Time" active={showTimestamps} onPress={() => update(() => (view.showTimestamps = !view.showTimestamps))} />
-            <ToolButton
-              theme={theme}
-              label={following ? "Following" : "Follow"}
-              active={following}
-              onPress={() => {
-                setFollowing(true);
-                // Same multi-frame placement as switching tabs: lands on the newest line in either list orientation,
-                // even when the rows there haven't been rendered yet.
-                restoreScroll();
-              }}
-            />
-            <ToolButton theme={theme} label="Copy" onPress={copyVisible} />
-            <ToolButton theme={theme} label="Clear" onPress={() => update(() => (tab.clearedThrough = lines[lines.length - 1]?.seq ?? 0))} />
+              <ToolButton theme={theme} label="Time" active={showTimestamps} onPress={() => update(() => (view.showTimestamps = !view.showTimestamps))} />
+              <ToolButton
+                theme={theme}
+                label={following ? "Following" : "Follow"}
+                active={following}
+                onPress={() => {
+                  setFollowing(true);
+                  // Same multi-frame placement as switching tabs: lands on the newest line in either list orientation,
+                  // even when the rows there haven't been rendered yet.
+                  restoreScroll();
+                }}
+              />
+              <ToolButton theme={theme} label="Copy" onPress={copyVisible} />
+              <ToolButton theme={theme} label="Clear" onPress={() => update(() => (tab.clearedThrough = lines[lines.length - 1]?.seq ?? 0))} />
+            </View>
           </View>
-        </View>
 
-        {running === false ? (
-          <View style={{ padding: 16 }}>
-            <Text style={muted}>The Aspire app host for this workspace isn't running. Start it from the Aspire button in the header.</Text>
-          </View>
-        ) : (
-          <View ref={container} style={{ flex: 1 }}>
-            {/* Kept laid out but invisible until loaded and placed, so it can be scrolled into position first. */}
-            <FlatList
-              ref={list}
-              style={{ opacity: revealed ? 1 : 0 }}
-              data={listRows}
-              inverted={INVERTED}
-              // Scrolled away from the newest line, keep the visible lines still as new ones arrive; within the
-              // threshold, snap to the newest line (that's following).
-              maintainVisibleContentPosition={INVERTED ? { minIndexForVisible: 0, autoscrollToTopThreshold: FOLLOW_SLOP } : undefined}
-              keyExtractor={(row) => String(row.line.seq)}
-              initialNumToRender={INITIAL_ROWS}
-              maxToRenderPerBatch={BATCH_ROWS}
-              updateCellsBatchingPeriod={16}
-              windowSize={WINDOW_SCREENS}
-              onScroll={onScroll}
-              onScrollBeginDrag={onTouchStart}
-              onScrollEndDrag={onDragEnd}
-              onMomentumScrollBegin={markUserScroll}
-              onMomentumScrollEnd={onMomentumEnd}
-              scrollEventThrottle={100}
-              onContentSizeChange={onContentSizeChange}
-              // An inverted list is flipped: its visual bottom is the content's top, and short content would sit at
-              // the visual bottom. Filling the viewport and justifying to the (flipped) end pins it to the top instead,
-              // along with the empty-state text.
-              contentContainerStyle={{
-                padding: layout.compact ? 8 : 12,
-                [INVERTED ? "paddingTop" : "paddingBottom"]: bottomInset(layout),
-                ...(INVERTED ? { flexGrow: 1, justifyContent: "flex-end" } : null),
-              }}
-              ListEmptyComponent={<Text style={muted}>{filter ? "No matching lines." : "No log output yet."}</Text>}
-              renderItem={({ item: { line: item, number } }) => (
-                <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6, paddingVertical: 1 }}>
-                  {resource === null ? null : (
-                    <Text style={[lineText, { minWidth: gutterWidth, textAlign: "right", color: theme.colors.foregroundMuted }]}>{number}</Text>
-                  )}
-                  {showTimestamps ? <Text style={[lineText, { color: theme.colors.foregroundMuted }]}>{time(item.timestamp) || "        "}</Text> : null}
-                  {resource === null ? <Badge label={item.resource} color={badgeColorFor(item.resource)} /> : null}
-                  {item.stderr ? <Badge label="stderr" color={STDERR_BADGE} /> : null}
-                  <Text selectable style={[lineText, { flex: 1, color: theme.colors.foreground }]}>
-                    <AnsiSegments segments={item.segments} theme={theme} dark={dark} onOpenUrl={openUrl} />
-                  </Text>
+          {running === false ? (
+            <View style={{ padding: 16 }}>
+              <Text style={muted}>The Aspire app host for this workspace isn't running. Start it from the Aspire button in the header.</Text>
+            </View>
+          ) : (
+            <View ref={container} style={{ flex: 1 }}>
+              {/* Kept laid out but invisible until loaded and placed, so it can be scrolled into position first. */}
+              <FlatList
+                ref={list}
+                style={{ opacity: revealed ? 1 : 0 }}
+                data={listRows}
+                inverted={INVERTED}
+                // Scrolled away from the newest line, keep the visible lines still as new ones arrive; within the
+                // threshold, snap to the newest line (that's following).
+                maintainVisibleContentPosition={INVERTED ? { minIndexForVisible: 0, autoscrollToTopThreshold: FOLLOW_SLOP } : undefined}
+                keyExtractor={(row) => String(row.line.seq)}
+                initialNumToRender={INITIAL_ROWS}
+                maxToRenderPerBatch={BATCH_ROWS}
+                updateCellsBatchingPeriod={16}
+                windowSize={WINDOW_SCREENS}
+                onScroll={onScroll}
+                onScrollBeginDrag={onTouchStart}
+                onScrollEndDrag={onDragEnd}
+                onMomentumScrollBegin={markUserScroll}
+                onMomentumScrollEnd={onMomentumEnd}
+                scrollEventThrottle={100}
+                onContentSizeChange={onContentSizeChange}
+                // An inverted list is flipped: its visual bottom is the content's top, and short content would sit at
+                // the visual bottom. Filling the viewport and justifying to the (flipped) end pins it to the top instead,
+                // along with the empty-state text.
+                contentContainerStyle={{
+                  padding: layout.compact ? 8 : 12,
+                  [INVERTED ? "paddingTop" : "paddingBottom"]: bottomInset(layout),
+                  ...(INVERTED ? { flexGrow: 1, justifyContent: "flex-end" } : null),
+                }}
+                ListEmptyComponent={<Text style={muted}>{filter ? "No matching lines." : "No log output yet."}</Text>}
+                renderItem={({ item: { line: item, number } }) => (
+                  <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6, paddingVertical: 1 }}>
+                    {resource === null ? null : (
+                      <Text style={[lineText, { minWidth: gutterWidth, textAlign: "right", color: theme.colors.foregroundMuted }]}>{number}</Text>
+                    )}
+                    {showTimestamps ? <Text style={[lineText, { color: theme.colors.foregroundMuted }]}>{time(item.timestamp) || "        "}</Text> : null}
+                    {resource === null ? <Badge label={item.resource} color={badgeColorFor(item.resource)} /> : null}
+                    {item.stderr ? <Badge label="stderr" color={STDERR_BADGE} /> : null}
+                    <Text selectable style={[lineText, { flex: 1, color: theme.colors.foreground }]}>
+                      <AnsiSegments segments={item.segments} theme={theme} dark={dark} onOpenUrl={openUrl} />
+                    </Text>
+                  </View>
+                )}
+              />
+              {loaded ? null : (
+                <View style={{ position: "absolute", top: 0, left: 0, right: 0, padding: layout.compact ? 8 : 12 }}>
+                  <Text style={muted}>Loading logs…</Text>
                 </View>
               )}
-            />
-            {loaded ? null : (
-              <View style={{ position: "absolute", top: 0, left: 0, right: 0, padding: layout.compact ? 8 : 12 }}>
-                <Text style={muted}>Loading logs…</Text>
-              </View>
-            )}
-          </View>
-        )}
+            </View>
+          )}
 
-        {error ? (
-          <View style={{ padding: 8, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
-            <Text style={{ fontSize: 12, color: theme.colors.statusDanger }}>{error}</Text>
-          </View>
-        ) : null}
-      </View>
+          {error ? (
+            <View style={{ padding: 8, borderTopWidth: 1, borderTopColor: theme.colors.border }}>
+              <Text style={{ fontSize: 12, color: theme.colors.statusDanger }}>{error}</Text>
+            </View>
+          ) : null}
+        </View>
+      </TouchContext.Provider>
     );
   };
 }

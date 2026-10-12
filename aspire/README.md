@@ -4,11 +4,12 @@ A [Paseo](https://paseo.sh) plugin that adds an **Aspire** button to the header 
 
 - **Idle:** pressing the button starts the app host in the background with `aspire start`.
 - **Starting / running:** the button opens a popover with:
-  - the app host state,
-  - an **Open dashboard** link,
-  - every resource with its state, health and endpoint URLs,
-  - **Restart** and **Stop**.
-- **Logs:** an **Aspire logs** workspace panel streams console output from the app host's resources. Pick **All** or a single resource. You can filter lines, show timestamps, follow the tail, copy and clear. Lines keep the colors and styles the resource wrote (ANSI 16/256/truecolor, bold, italic, underline), stderr lines get a **stderr** badge like the Aspire dashboard, and URLs are clickable. The **All** view labels each line with a colored resource badge; single-resource views show line numbers. Text uses the same monospace stack and size as Paseo's terminal. The dropdown's **View all logs** and per-resource **Logs** links open the panel on that resource.
+  - the app host state, with icon buttons to open the dashboard, view all logs, restart and stop,
+  - every resource with its state, health and endpoint URLs, plus icon buttons to start or stop it (whichever it
+    currently offers, as in the dashboard), view its logs, and open it in the dashboard.
+
+  Icon buttons show their label as a tooltip on desktop.
+- **Logs:** an **Aspire logs** workspace panel streams console output from the app host's resources. Pick **All** or a single resource. You can filter lines, show timestamps, follow the tail, copy and clear. Lines keep the colors and styles the resource wrote (ANSI 16/256/truecolor, bold, italic, underline), stderr lines get a **stderr** badge like the Aspire dashboard, and URLs are clickable. The **All** view labels each line with a colored resource badge; single-resource views show line numbers. Text uses the same monospace stack and size as Paseo's terminal. The dropdown's view-logs buttons open the panel on all resources or on one resource.
 - **Status dot:** the button's icon shows a dot. Green means running, amber means starting or stopping, red means the last start failed.
 
 ## Requirements

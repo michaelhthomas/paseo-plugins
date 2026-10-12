@@ -30,8 +30,8 @@ export function createAspireIcon(status: IconStatus) {
           <View
             style={{
               position: "absolute",
-              right: -2,
-              bottom: -2,
+              right: 0,
+              bottom: 0,
               width: dotSize,
               height: dotSize,
               borderRadius: dotSize / 2,
