@@ -27,7 +27,18 @@ export const aspireResourceSchema = z.object({
   exitCode: z.number().nullable(),
   urls: z.array(z.object({ name: z.string(), url: z.string() })),
   dashboardUrl: z.string().nullable(),
+  /**
+   * The lifecycle commands the resource currently offers, as the dashboard decides them: a running resource offers
+   * `stop`, a stopped or finished one `start`, and some offer neither. A listed command may be temporarily disabled.
+   */
+  commands: z.object({
+    start: z.object({ enabled: z.boolean() }).optional(),
+    stop: z.object({ enabled: z.boolean() }).optional(),
+  }),
 });
+
+export const resourceCommandSchema = z.enum(["start", "stop"]);
+export type ResourceCommand = z.infer<typeof resourceCommandSchema>;
 
 export const aspireResourcesSchema = z.object({
   resources: z.array(aspireResourceSchema),
@@ -85,6 +96,17 @@ export const aspireResourcesRpc = defineRpc({
   name: "aspire.resources",
   input: workspaceInput,
   output: aspireResourcesSchema,
+});
+
+export const resourceCommandRpc = defineRpc({
+  name: "aspire.resource-command",
+  input: z.object({
+    workspaceId: z.string(),
+    /** Resource `name` from `aspire.resources`. */
+    resource: z.string(),
+    command: resourceCommandSchema,
+  }),
+  output: z.object({ ok: z.literal(true) }),
 });
 
 export const logLineSchema = z.object({

@@ -4,6 +4,7 @@ import {
   aspireResources,
   aspireStatus,
   detectAspire,
+  resourceCommand,
   restartAspire,
   selectAppHost,
   startAspire,
@@ -18,6 +19,7 @@ import {
   aspireResourcesRpc,
   aspireStatusRpc,
   detectAspireRpc,
+  resourceCommandRpc,
   restartAspireRpc,
   selectAppHostRpc,
   startAspireRpc,
@@ -33,6 +35,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(restartAspireRpc, restartAspire);
   server.handle(aspireResourcesRpc, aspireResources);
   server.handle(aspireLogsRpc, aspireLogs);
+  server.handle(resourceCommandRpc, resourceCommand);
   const offArchived = server.on("workspace.archived", ({ workspace }) => stopForArchivedWorkspace(workspace.cwd));
   return () => {
     offArchived();

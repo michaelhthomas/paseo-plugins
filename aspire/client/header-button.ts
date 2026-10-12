@@ -7,6 +7,7 @@ import {
   aspireResourcesRpc,
   aspireStatusRpc,
   detectAspireRpc,
+  resourceCommandRpc,
   restartAspireRpc,
   selectAppHostRpc,
   startAspireRpc,
@@ -178,6 +179,10 @@ export function contributeHeaderButtons(client: PluginClientContext) {
       start: () => run(workspaceId, () => client.rpc(startAspireRpc, { workspaceId })),
       stop: () => run(workspaceId, () => client.rpc(stopAspireRpc, { workspaceId })),
       restart: () => run(workspaceId, () => client.rpc(restartAspireRpc, { workspaceId })),
+      resourceCommand: async (resource, command) => {
+        await client.rpc(resourceCommandRpc, { workspaceId, resource, command });
+        await refreshResources(workspaceId);
+      },
       openLogs: (resource) => {
         logsTarget.set(workspaceId, resource);
         client.openPanel(LOGS_PANEL_ID, { workspaceId });

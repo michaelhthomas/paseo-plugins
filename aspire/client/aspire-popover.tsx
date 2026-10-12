@@ -3,7 +3,7 @@ import type { PluginButtonContentProps } from "@getpaseo/plugin/client";
 import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
-import type { AppHost, AspireResource, AspireResources, AspireStatus } from "../shared/aspire";
+import type { AppHost, AspireResource, AspireResources, AspireStatus, ResourceCommand } from "../shared/aspire";
 
 const RESOURCE_POLL_MS = 3_000;
 const POPOVER_WIDTH = 360;
@@ -29,6 +29,8 @@ export type PopoverModel = {
   select(path: string): Promise<void>;
   /** Opens the logs panel on one resource, or on every resource when null. */
   openLogs(resource: string | null): void;
+  /** Starts or stops one resource; resolves once the CLI has run it (the resource list is refreshed after). */
+  resourceCommand(resource: string, command: ResourceCommand): Promise<void>;
 };
 
 export function describeError(error: unknown) {
@@ -121,7 +123,21 @@ function Button({
  * A small icon-only button. `icon` is a Lucide icon name, rendered with Paseo's bundled icon set. The SDK has no
  * tooltip component, so on web the label becomes the element's native `title` tooltip.
  */
-function IconAction({ theme, icon, label, onPress }: { theme: PluginTheme; icon: string; label: string; onPress(): void }) {
+function IconAction({
+  theme,
+  icon,
+  label,
+  onPress,
+  disabled = false,
+  busy = false,
+}: {
+  theme: PluginTheme;
+  icon: string;
+  label: string;
+  onPress(): void;
+  disabled?: boolean;
+  busy?: boolean;
+}) {
   const ref = useRef<View>(null);
   useEffect(() => {
     // On react-native-web a host component's ref is its DOM element.
@@ -132,11 +148,18 @@ function IconAction({ theme, icon, label, onPress }: { theme: PluginTheme; icon:
       ref={ref}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled: disabled || busy, busy }}
       hitSlop={6}
+      disabled={disabled || busy}
       onPress={onPress}
-      style={({ pressed }) => ({ padding: 2, borderRadius: 4, backgroundColor: pressed ? theme.colors.surface2 : "transparent" })}
+      style={({ pressed }) => ({
+        padding: 2,
+        borderRadius: 4,
+        opacity: disabled ? 0.4 : 1,
+        backgroundColor: pressed ? theme.colors.surface2 : "transparent",
+      })}
     >
-      <Icon name={icon} size={14} color={theme.colors.foregroundMuted} />
+      {busy ? <ActivityIndicator size={14} color={theme.colors.foregroundMuted} /> : <Icon name={icon} size={14} color={theme.colors.foregroundMuted} />}
     </Pressable>
   );
 }
@@ -171,6 +194,8 @@ export function createAspirePopover(model: PopoverModel) {
     const { status, appHosts, selected, cliAvailable, resources, actionError } = model.getState();
     const [pending, setPending] = useState<string | null>(null);
     const [openError, setOpenError] = useState<string | null>(null);
+    // The `${resource}:${command}` currently running, so its button shows a spinner.
+    const [pendingCommand, setPendingCommand] = useState<string | null>(null);
     const running = status.state === "running";
     const error = actionError ?? status.error;
     const current = appHosts.find((host) => host.path === (status.appHostPath ?? selected)) ?? null;
@@ -198,6 +223,15 @@ export function createAspirePopover(model: PopoverModel) {
     const open = (url: string) => {
       setOpenError(null);
       model.open(url).then(close, (e: unknown) => setOpenError(describeError(e)));
+    };
+
+    const runCommand = (resource: AspireResource, command: ResourceCommand) => {
+      setOpenError(null);
+      setPendingCommand(`${resource.name}:${command}`);
+      model
+        .resourceCommand(resource.name, command)
+        .catch((e: unknown) => setOpenError(`Couldn't ${command} ${resource.displayName}: ${describeError(e)}`))
+        .finally(() => setPendingCommand(null));
     };
 
     const openLogs = (resource: string | null) => {
@@ -330,6 +364,22 @@ export function createAspirePopover(model: PopoverModel) {
                   </Text>
                   <Text style={muted}>{[resource.type, resource.health ?? resource.state].filter(Boolean).join(" · ")}</Text>
                   <View style={{ flex: 1 }} />
+                  {/* Like the dashboard: offer whichever of start/stop the resource currently lists. */}
+                  {(["start", "stop"] as const).map((command) => {
+                    const available = resource.commands[command];
+                    if (!available) return null;
+                    return (
+                      <IconAction
+                        key={command}
+                        theme={theme}
+                        icon={command === "start" ? "Play" : "Square"}
+                        label={`${command === "start" ? "Start" : "Stop"} ${resource.displayName}`}
+                        disabled={!available.enabled}
+                        busy={pendingCommand === `${resource.name}:${command}`}
+                        onPress={() => runCommand(resource, command)}
+                      />
+                    );
+                  })}
                   <IconAction theme={theme} icon="Logs" label={`View ${resource.displayName} logs`} onPress={() => openLogs(resource.name)} />
                   {resource.dashboardUrl ? (
                     <IconAction

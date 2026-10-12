@@ -1,5 +1,5 @@
 import { dirname } from "node:path";
-import type { AspireResource, AspireResources, AspireStatus } from "../shared/aspire";
+import type { AspireResource, AspireResources, AspireStatus, ResourceCommand } from "../shared/aspire";
 import { IDLE_STATUS } from "../shared/aspire";
 import { followAspire, runAspire } from "./cli";
 import { normalizePath } from "./state";
@@ -7,6 +7,7 @@ import { normalizePath } from "./state";
 const START_TIMEOUT_MS = 10 * 60_000;
 const STOP_TIMEOUT_MS = 2 * 60_000;
 const DESCRIBE_TIMEOUT_MS = 30_000;
+const RESOURCE_COMMAND_TIMEOUT_MS = 2 * 60_000;
 const RESOURCES_CACHE_MS = 2_000;
 const LOGIN_URL = /https?:\/\/[^\s"'<>]+\/login\?t=[^\s"'<>]+/i;
 const LOG_PATH = /(?:[A-Za-z]:\\|\/)[^\s"'<>]+\.log\b/;
@@ -178,7 +179,32 @@ function toResource(value: unknown): AspireResource | null {
       .filter((u) => u.isInternal !== true)
       .map((u) => ({ name: typeof u.name === "string" ? u.name : "", url: u.url })),
     dashboardUrl: str(r.dashboardUrl),
+    commands: { start: commandState(r.commands, "start"), stop: commandState(r.commands, "stop") },
   };
+}
+
+/** `describe` lists each available command with a state; hidden ones are left out, as the dashboard does. */
+function commandState(commands: unknown, name: ResourceCommand) {
+  const command = commands && typeof commands === "object" ? (commands as Record<string, unknown>)[name] : undefined;
+  if (!command || typeof command !== "object") return undefined;
+  const state = (command as { state?: unknown }).state;
+  if (state === "Hidden") return undefined;
+  return { enabled: state === "Enabled" };
+}
+
+/** Runs `aspire resource <name> start|stop` against a running app host. */
+export async function runResourceCommand(appHostPath: string, resource: string, command: ResourceCommand) {
+  ensureFollowing();
+  const key = normalizePath(appHostPath);
+  const entry = running.get(key);
+  if (!entry) throw new Error("The app host isn't running");
+  const { code, stdout, stderr } = await runAspire(["resource", resource, command, "--apphost", entry.appHostPath], {
+    cwd: dirname(appHostPath),
+    timeoutMs: RESOURCE_COMMAND_TIMEOUT_MS,
+  });
+  // The resource's state changed; don't serve the pre-command snapshot.
+  resourceCache.delete(key);
+  if (code !== 0) throw new Error(summarize(`${stdout}\n${stderr}`, code));
 }
 
 function summarize(output: string, code: number | null) {

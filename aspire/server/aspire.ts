@@ -6,6 +6,7 @@ import {
   aspireResourcesRpc,
   aspireStatusRpc,
   detectAspireRpc,
+  resourceCommandRpc,
   restartAspireRpc,
   selectAppHostRpc,
   startAspireRpc,
@@ -14,7 +15,7 @@ import {
 import { checkCli } from "./cli";
 import { detectAppHosts, forgetDetection } from "./detect";
 import { readLogs } from "./logs";
-import { isRunning, resources, restart, runningPath, start, statusFor, stop } from "./monitor";
+import { isRunning, resources, restart, runResourceCommand, runningPath, start, statusFor, stop } from "./monitor";
 import { getSelection, normalizePath, setSelection } from "./state";
 
 async function workspaceDirectory(workspaceId: string, { paseo }: PluginHandlerContext) {
@@ -84,6 +85,14 @@ export async function restartAspire({ workspaceId }: RpcInput<typeof restartAspi
 export async function aspireResources({ workspaceId }: RpcInput<typeof aspireResourcesRpc>, context: PluginHandlerContext) {
   const { selected } = await resolveAppHost(workspaceId, context);
   return selected ? resources(selected.path) : { resources: [], error: null };
+}
+
+export async function resourceCommand(
+  { workspaceId, resource, command }: RpcInput<typeof resourceCommandRpc>,
+  context: PluginHandlerContext,
+) {
+  await runResourceCommand(await requireAppHost(workspaceId, context), resource, command);
+  return { ok: true as const };
 }
 
 export async function aspireLogs(
