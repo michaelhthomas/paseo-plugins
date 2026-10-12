@@ -14,6 +14,8 @@ import {
 } from "../shared/aspire";
 import { createAspireIcon } from "./aspire-icon";
 import { createAspirePopover, describeError, type PopoverState } from "./aspire-popover";
+import { LOGS_PANEL_ID } from "./logs-panel";
+import { logsTarget } from "./logs-target";
 
 const ACTIVE_POLL_MS = 3_000;
 const IDLE_POLL_MS = 15_000;
@@ -176,6 +178,10 @@ export function contributeHeaderButtons(client: PluginClientContext) {
       start: () => run(workspaceId, () => client.rpc(startAspireRpc, { workspaceId })),
       stop: () => run(workspaceId, () => client.rpc(stopAspireRpc, { workspaceId })),
       restart: () => run(workspaceId, () => client.rpc(restartAspireRpc, { workspaceId })),
+      openLogs: (resource) => {
+        logsTarget.set(workspaceId, resource);
+        client.openPanel(LOGS_PANEL_ID, { workspaceId });
+      },
       select: (path) => {
         entry.selected = path;
         entry.resources = null;

@@ -8,6 +8,7 @@ A [Paseo](https://paseo.sh) plugin that adds an **Aspire** button to the header 
   - an **Open dashboard** link,
   - every resource with its state, health and endpoint URLs,
   - **Restart** and **Stop**.
+- **Logs:** an **Aspire logs** workspace panel streams console output from the app host's resources. Pick **All** or a single resource. You can filter lines, show timestamps, follow the tail, copy and clear. Lines keep the colors and styles the resource wrote (ANSI 16/256/truecolor, bold, italic, underline), stderr lines get a **stderr** badge like the Aspire dashboard, and URLs are clickable. The **All** view labels each line with a colored resource badge; single-resource views show line numbers. Text uses the same monospace stack and size as Paseo's terminal. The dropdown's **View all logs** and per-resource **Logs** links open the panel on that resource.
 - **Status dot:** the button's icon shows a dot. Green means running, amber means starting or stopping, red means the last start failed.
 
 ## Requirements
@@ -36,6 +37,7 @@ Everything goes through the Aspire CLI on the daemon machine:
 - **Running app hosts:** one long-lived `aspire ps --format Json --follow` stream. This includes app hosts started outside Paseo, for example from a terminal.
   - A one-shot `aspire ps` (without `--follow`) stops "orphaned" app hosts as a side effect, so the plugin never runs it.
 - **Resources:** `aspire describe --apphost <path> --format Json`, polled while the popover is open and cached for two seconds.
+- **Logs:** one `aspire logs --apphost <path> --format Json --follow -n 2000 -t` per app host, covering every resource and buffered on the daemon (up to 20,000 lines). Like the Aspire dashboard, resource tabs filter this one stream on the client, so switching tabs needs no loading. The backlog the CLI replays on connect is held back until it has all arrived (the stream goes quiet briefly), and the panel's first read waits for it, so it arrives in one piece. After that the panel polls every second with a cursor. A stream nobody has read for five minutes is shut down.
 - **Start, stop and restart:** `aspire start --apphost <path>` and `aspire stop --apphost <path>`.
 - **Archiving:** archiving a workspace stops its running app host.
 
@@ -52,9 +54,14 @@ paseo plugin install /absolute/path/to/paseo-plugins/aspire
 - `shared/aspire.ts`: RPC contracts and schemas.
 - `server/cli.ts`: spawns the Aspire CLI, follows `--follow` streams and checks the CLI version.
 - `server/detect.ts`: app host discovery.
+- `server/logs.ts`: buffered log streams for the logs panel.
 - `server/monitor.ts`: the `ps` stream, start, stop, restart and resources.
 - `server/state.ts`: path normalization and the remembered app host selection.
 - `server/aspire.ts`: RPC handlers.
 - `client/header-button.ts`: one header button per workspace, plus polling.
 - `client/aspire-popover.tsx`: the popover content.
+- `client/logs-panel.tsx`: the Aspire logs workspace panel.
+- `client/ansi-text.tsx`: renders ANSI-styled log segments.
+- `shared/ansi.ts`: ANSI escape parser (runs on the daemon).
+- `client/logs-target.ts`: which resource the logs panel shows, shared with the popover.
 - `client/aspire-icon.tsx`: the Aspire logo with the status dot.

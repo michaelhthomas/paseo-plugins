@@ -55,6 +55,12 @@ export function isRunning(appHostPath: string) {
   return running.has(normalizePath(appHostPath));
 }
 
+/** The app host path exactly as `aspire ps` printed it, or null when it isn't running. */
+export function runningPath(appHostPath: string) {
+  ensureFollowing();
+  return running.get(normalizePath(appHostPath))?.appHostPath ?? null;
+}
+
 export function statusFor(appHostPath: string | null): AspireStatus {
   ensureFollowing();
   if (!appHostPath) return IDLE_STATUS;

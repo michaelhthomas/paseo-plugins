@@ -2,6 +2,7 @@ import type { RpcInput } from "@getpaseo/plugin";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type { AppHost } from "../shared/aspire";
 import {
+  aspireLogsRpc,
   aspireResourcesRpc,
   aspireStatusRpc,
   detectAspireRpc,
@@ -12,7 +13,8 @@ import {
 } from "../shared/aspire";
 import { checkCli } from "./cli";
 import { detectAppHosts, forgetDetection } from "./detect";
-import { isRunning, resources, restart, start, statusFor, stop } from "./monitor";
+import { readLogs } from "./logs";
+import { isRunning, resources, restart, runningPath, start, statusFor, stop } from "./monitor";
 import { getSelection, normalizePath, setSelection } from "./state";
 
 async function workspaceDirectory(workspaceId: string, { paseo }: PluginHandlerContext) {
@@ -82,6 +84,16 @@ export async function restartAspire({ workspaceId }: RpcInput<typeof restartAspi
 export async function aspireResources({ workspaceId }: RpcInput<typeof aspireResourcesRpc>, context: PluginHandlerContext) {
   const { selected } = await resolveAppHost(workspaceId, context);
   return selected ? resources(selected.path) : { resources: [], error: null };
+}
+
+export async function aspireLogs(
+  { workspaceId, generation, after }: RpcInput<typeof aspireLogsRpc>,
+  context: PluginHandlerContext,
+) {
+  const { selected } = await resolveAppHost(workspaceId, context);
+  const path = selected ? runningPath(selected.path) : null;
+  if (!path) return readLogs(selected?.path ?? "", false, generation, after);
+  return readLogs(path, true, generation, after);
 }
 
 /** Stops whatever app host this workspace was running when it is archived. */

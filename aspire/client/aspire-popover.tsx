@@ -1,8 +1,8 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginButtonContentProps } from "@getpaseo/plugin/client";
-import { copyText } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
 import type { AppHost, AspireResource, AspireResources, AspireStatus } from "../shared/aspire";
 
 const RESOURCE_POLL_MS = 3_000;
@@ -27,6 +27,8 @@ export type PopoverModel = {
   stop(): Promise<void>;
   restart(): Promise<void>;
   select(path: string): Promise<void>;
+  /** Opens the logs panel on one resource, or on every resource when null. */
+  openLogs(resource: string | null): void;
 };
 
 export function describeError(error: unknown) {
@@ -115,6 +117,38 @@ function Button({
   );
 }
 
+/**
+ * A small icon-only button. `icon` is a Lucide icon name, rendered with Paseo's bundled icon set. The SDK has no
+ * tooltip component, so on web the label becomes the element's native `title` tooltip.
+ */
+function IconAction({ theme, icon, label, onPress }: { theme: PluginTheme; icon: string; label: string; onPress(): void }) {
+  const ref = useRef<View>(null);
+  useEffect(() => {
+    // On react-native-web a host component's ref is its DOM element.
+    if (Platform.OS === "web") (ref.current as unknown as { setAttribute(name: string, value: string): void } | null)?.setAttribute("title", label);
+  }, [label]);
+  return (
+    <Pressable
+      ref={ref}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      hitSlop={6}
+      onPress={onPress}
+      style={({ pressed }) => ({ padding: 2, borderRadius: 4, backgroundColor: pressed ? theme.colors.surface2 : "transparent" })}
+    >
+      <Icon name={icon} size={14} color={theme.colors.foregroundMuted} />
+    </Pressable>
+  );
+}
+
+function Action({ theme, label, onPress }: { theme: PluginTheme; label: string; onPress(): void }) {
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={label} onPress={onPress} style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}>
+      <Text style={{ fontSize: 12, color: theme.colors.accent }}>{label}</Text>
+    </Pressable>
+  );
+}
+
 function Link({ theme, label, url, onOpen }: { theme: PluginTheme; label: string; url: string | null; onOpen(url: string): void }) {
   return (
     <Pressable
@@ -164,6 +198,11 @@ export function createAspirePopover(model: PopoverModel) {
     const open = (url: string) => {
       setOpenError(null);
       model.open(url).then(close, (e: unknown) => setOpenError(describeError(e)));
+    };
+
+    const openLogs = (resource: string | null) => {
+      model.openLogs(resource);
+      close();
     };
 
     const muted = { fontSize: 12, color: theme.colors.foregroundMuted } as const;
@@ -276,6 +315,7 @@ export function createAspirePopover(model: PopoverModel) {
               <Link theme={theme} label="Open dashboard" url={status.dashboardUrl} onOpen={open} />
               {status.dashboardUrl ? <Text style={muted}>{displayUrl(status.dashboardUrl)}</Text> : null}
             </View>
+            <Action theme={theme} label="View all logs" onPress={() => openLogs(null)} />
             <View style={{ height: 1, backgroundColor: theme.colors.border }} />
             <Text style={muted}>Resources</Text>
             {resources === null ? <ActivityIndicator size="small" /> : null}
@@ -290,7 +330,15 @@ export function createAspirePopover(model: PopoverModel) {
                   </Text>
                   <Text style={muted}>{[resource.type, resource.health ?? resource.state].filter(Boolean).join(" · ")}</Text>
                   <View style={{ flex: 1 }} />
-                  {resource.dashboardUrl ? <Link theme={theme} label="Details" url={resource.dashboardUrl} onOpen={open} /> : null}
+                  <IconAction theme={theme} icon="Logs" label={`View ${resource.displayName} logs`} onPress={() => openLogs(resource.name)} />
+                  {resource.dashboardUrl ? (
+                    <IconAction
+                      theme={theme}
+                      icon="ExternalLink"
+                      label={`Open ${resource.displayName} in the dashboard`}
+                      onPress={() => open(resource.dashboardUrl!)}
+                    />
+                  ) : null}
                 </View>
                 {resource.urls.map((url) => (
                   <View key={url.url} style={{ paddingLeft: 14 }}>

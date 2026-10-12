@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { ansiSegmentSchema } from "./ansi";
 
 export const appHostSchema = z.object({
   path: z.string(),
@@ -84,6 +85,43 @@ export const aspireResourcesRpc = defineRpc({
   name: "aspire.resources",
   input: workspaceInput,
   output: aspireResourcesSchema,
+});
+
+export const logLineSchema = z.object({
+  seq: z.number(),
+  resource: z.string(),
+  timestamp: z.string().nullable(),
+  /** Plain text with escapes removed, for filtering and copying. */
+  text: z.string(),
+  /** The same text split into ANSI-styled runs, as the resource wrote it. */
+  segments: z.array(ansiSegmentSchema),
+  stderr: z.boolean(),
+});
+
+export const aspireLogsSchema = z.object({
+  running: z.boolean(),
+  /** True while the server is still collecting the initial backlog; no lines are returned until it's complete. */
+  loading: z.boolean(),
+  /** Changes whenever the server restarts its log stream; clients must drop what they have and re-read from 0. */
+  generation: z.number(),
+  lines: z.array(logLineSchema),
+  /** Pass back as `after` on the next call. */
+  cursor: z.number(),
+  error: z.string().nullable(),
+});
+
+export type LogLine = z.infer<typeof logLineSchema>;
+export type AspireLogs = z.infer<typeof aspireLogsSchema>;
+
+export const aspireLogsRpc = defineRpc({
+  name: "aspire.logs",
+  /** Every resource's output in one stream; clients filter it per resource. */
+  input: z.object({
+    workspaceId: z.string(),
+    generation: z.number().nullable(),
+    after: z.number(),
+  }),
+  output: aspireLogsSchema,
 });
 
 export const IDLE_STATUS: AspireStatus = {
