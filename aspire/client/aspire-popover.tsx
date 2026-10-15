@@ -4,6 +4,7 @@ import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import type { AppHost, AspireResource, AspireResources, AspireStatus, ResourceCommand } from "../shared/aspire";
+import { isResourceUnhealthy } from "../shared/aspire";
 import { isTouchLayout, TouchContext, useTouch } from "./touch";
 import { useWebTooltip } from "./web-tooltip";
 
@@ -75,9 +76,8 @@ function statusColor(theme: PluginTheme, status: AspireStatus, error: string | n
 }
 
 function resourceColor(theme: PluginTheme, resource: AspireResource) {
-  const { state, health, exitCode } = resource;
-  if (state === "FailedToStart" || health === "Unhealthy") return theme.colors.statusDanger;
-  if ((state === "Exited" || state === "Finished") && exitCode !== null && exitCode !== 0) return theme.colors.statusDanger;
+  const { state, health } = resource;
+  if (isResourceUnhealthy(resource)) return theme.colors.statusDanger;
   if (state === "Running") return health === null || health === "Healthy" ? theme.colors.statusSuccess : theme.colors.statusWarning;
   if (state === "Starting" || state === "Waiting" || state === "NotStarted") return theme.colors.statusWarning;
   return theme.colors.foregroundMuted;

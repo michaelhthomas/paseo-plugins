@@ -7,6 +7,7 @@ import {
   aspireResourcesRpc,
   aspireStatusRpc,
   detectAspireRpc,
+  isResourceUnhealthy,
   resourceCommandRpc,
   restartAspireRpc,
   selectAppHostRpc,
@@ -21,6 +22,8 @@ import { logsTarget } from "./logs-target";
 const ACTIVE_POLL_MS = 3_000;
 const IDLE_POLL_MS = 15_000;
 const REDETECT_MS = 60_000;
+// While running, re-check resources this often so the button can flag unhealthy ones without the popover open.
+const RESOURCE_CHECK_MS = 10_000;
 
 const ICONS = {
   idle: createAspireIcon("idle"),
@@ -37,6 +40,9 @@ type Entry = {
   status: AspireStatus;
   resources: AspireResources | null;
   resourcesInflight: Promise<void> | null;
+  resourcesAt: number;
+  /** How many resources are unhealthy, as of the last resource check; drives the button's red dot. */
+  unhealthy: number;
   actionError: string | null;
   cancelPoll: (() => void) | null;
   detectedAt: number;
@@ -67,6 +73,8 @@ export function contributeHeaderButtons(client: PluginClientContext) {
         status: IDLE_STATUS,
         resources: null,
         resourcesInflight: null,
+        resourcesAt: 0,
+        unhealthy: 0,
         actionError: null,
         cancelPoll: null,
         detectedAt: 0,
@@ -90,8 +98,17 @@ export function contributeHeaderButtons(client: PluginClientContext) {
     const error = entry.actionError ?? status.error;
     const name = nameOf(status.appHostPath ?? entry.selected);
     const canStartDirectly = status.state === "idle" && entry.selected !== null && !error && entry.cliAvailable;
+    const unhealthy = status.state === "running" ? entry.unhealthy : 0;
     const icon =
-      status.state === "running" ? ICONS.running : status.state === "idle" ? (error ? ICONS.failed : ICONS.idle) : ICONS.busy;
+      status.state === "running"
+        ? unhealthy > 0
+          ? ICONS.failed
+          : ICONS.running
+        : status.state === "idle"
+          ? error
+            ? ICONS.failed
+            : ICONS.idle
+          : ICONS.busy;
     const title =
       status.state === "idle"
         ? error
@@ -99,7 +116,7 @@ export function contributeHeaderButtons(client: PluginClientContext) {
           : entry.selected
             ? `Start Aspire app host (${name})`
             : "Choose an Aspire app host"
-        : `Aspire: ${name} is ${status.state}`;
+        : `Aspire: ${name} is ${status.state}${unhealthy > 0 ? ` (${unhealthy} unhealthy resource${unhealthy === 1 ? "" : "s"})` : ""}`;
     return {
       title,
       icon,
@@ -122,7 +139,12 @@ export function contributeHeaderButtons(client: PluginClientContext) {
     if (!entry || stopped) return;
     const previous = entry.status;
     entry.status = status;
-    if (status.state === "idle" && entry.resources !== null) entry.resources = null;
+    if (status.state === "idle") {
+      entry.resources = null;
+      entry.unhealthy = 0;
+    } else if (status.state === "running" && Date.now() - entry.resourcesAt >= RESOURCE_CHECK_MS) {
+      void refreshResources(workspaceId);
+    }
     const changed =
       previous.state !== status.state ||
       previous.dashboardUrl !== status.dashboardUrl ||
@@ -152,8 +174,15 @@ export function contributeHeaderButtons(client: PluginClientContext) {
       .catch((error): AspireResources => ({ resources: entry.resources?.resources ?? [], error: describeError(error) }))
       .then((next) => {
         entry.resourcesInflight = null;
+        entry.resourcesAt = Date.now();
         entry.resources = next;
-        notify(entry);
+        const unhealthy = next.resources.filter(isResourceUnhealthy).length;
+        if (unhealthy !== entry.unhealthy) {
+          entry.unhealthy = unhealthy;
+          render(workspaceId);
+        } else {
+          notify(entry);
+        }
       });
     return entry.resourcesInflight;
   };

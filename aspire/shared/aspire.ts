@@ -37,6 +37,12 @@ export const aspireResourceSchema = z.object({
   }),
 });
 
+/** A resource in trouble: failing health checks, failed to start, or exited with a non-zero code. */
+export function isResourceUnhealthy({ state, health, exitCode }: AspireResource) {
+  if (state === "FailedToStart" || health === "Unhealthy") return true;
+  return (state === "Exited" || state === "Finished") && exitCode !== null && exitCode !== 0;
+}
+
 export const resourceCommandSchema = z.enum(["start", "stop"]);
 export type ResourceCommand = z.infer<typeof resourceCommandSchema>;
 
