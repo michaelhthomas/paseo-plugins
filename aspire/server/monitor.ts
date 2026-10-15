@@ -28,7 +28,26 @@ let disposeFollow: (() => void) | null = null;
 
 // One-shot `aspire ps` stops "orphaned" app hosts as a side effect, so only ever use `--follow`.
 function ensureFollowing() {
-  disposeFollow ??= followAspire(["ps", "--format", "Json", "--follow"], onPsObject, () => running.clear());
+  disposeFollow ??= followAspire(["ps", "--format", "Json", "--follow"], onPsObject, () => {
+    // A reconnected stream re-reports every running app host, so start from nothing.
+    processes.clear();
+    running.clear();
+  });
+}
+
+/**
+ * Every app host process `ps` has reported as running, per app host path, keyed by PID. One path can have more than
+ * one process over time (watch mode relaunches the app host; a restart overlaps the old and new one), and `ps` may
+ * report the new process before the old one's "stopped" — so a "stopped" only removes its own process, and the path
+ * counts as running while any process remains. `running` holds the newest remaining process for each path.
+ */
+const processes = new Map<string, Map<string, PsEntry>>();
+
+function forget(key: string) {
+  processes.delete(key);
+  running.delete(key);
+  loginUrls.delete(key);
+  resourceCache.delete(key);
 }
 
 function onPsObject(value: unknown) {
@@ -36,18 +55,31 @@ function onPsObject(value: unknown) {
   const entry = value as Record<string, unknown>;
   if (typeof entry.appHostPath !== "string") return;
   const key = normalizePath(entry.appHostPath);
+  const appHostPid = typeof entry.appHostPid === "number" ? entry.appHostPid : null;
+  const cliPid = typeof entry.cliPid === "number" ? entry.cliPid : null;
+  const pid = appHostPid ?? cliPid;
   if (entry.status === "stopped") {
-    running.delete(key);
-    loginUrls.delete(key);
-    resourceCache.delete(key);
+    const live = processes.get(key);
+    // Without a PID there's no telling which process stopped, so fall back to treating the app host as stopped.
+    if (pid === null || !live) return forget(key);
+    live.delete(String(pid));
+    const newest = [...live.values()].pop();
+    if (!newest) return forget(key);
+    running.set(key, newest);
     return;
   }
-  running.set(key, {
+  const report: PsEntry = {
     appHostPath: entry.appHostPath,
-    appHostPid: typeof entry.appHostPid === "number" ? entry.appHostPid : null,
+    appHostPid,
     dashboardUrl: typeof entry.dashboardUrl === "string" ? entry.dashboardUrl : null,
     logFilePath: typeof entry.logFilePath === "string" ? entry.logFilePath : null,
-  });
+  };
+  let live = processes.get(key);
+  if (!live) processes.set(key, (live = new Map()));
+  // Re-insert so the newest report is last.
+  live.delete(String(pid));
+  live.set(String(pid), report);
+  running.set(key, report);
   failures.delete(key);
 }
 
@@ -119,9 +151,7 @@ export async function stop(appHostPath: string): Promise<AspireStatus> {
     const { code, stdout, stderr } = await runAspire(["stop", "--apphost", target], { cwd: dirname(appHostPath), timeoutMs: STOP_TIMEOUT_MS });
     if (code !== 0) throw new Error(summarize(`${stdout}\n${stderr}`, code));
     // `ps --follow` reports the exit shortly after; drop the entry now so the UI doesn't flash "running".
-    running.delete(key);
-    loginUrls.delete(key);
-    resourceCache.delete(key);
+    forget(key);
   } finally {
     stopping.delete(key);
   }
@@ -219,5 +249,6 @@ function summarize(output: string, code: number | null) {
 export function disposeMonitor() {
   disposeFollow?.();
   disposeFollow = null;
+  processes.clear();
   running.clear();
 }
