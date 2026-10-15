@@ -1,0 +1,8 @@
+{
+  "id": "git-ui",
+  "name": "Git UI",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.11.2"
+  }
+}
