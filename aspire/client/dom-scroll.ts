@@ -6,6 +6,8 @@ export type ScrollElement = {
   readonly scrollHeight: number;
   readonly clientHeight: number;
   readonly children: ArrayLike<ScrollElement>;
+  querySelector(selector: string): ScrollElement | null;
+  getBoundingClientRect(): { top: number };
   addEventListener(type: string, listener: (event: DomEvent) => void, options?: { passive?: boolean }): void;
   removeEventListener(type: string, listener: (event: DomEvent) => void): void;
 };
@@ -28,6 +30,12 @@ export function findScrollElement(root: unknown): ScrollElement | null {
     for (let i = 0; i < element.children.length; i++) queue.push(element.children[i]);
   }
   return null;
+}
+
+/** How far the element with this `id` (a React Native `nativeID`) sits below the top of the viewport, or null. */
+export function offsetInViewport(element: ScrollElement, id: string) {
+  const target = element.querySelector(`[id="${id}"]`);
+  return target ? target.getBoundingClientRect().top - element.getBoundingClientRect().top : null;
 }
 
 /** Calls `onHide` when the element stops rendering (e.g. an ancestor gets `display: none`) and `onShow` when it comes back. */

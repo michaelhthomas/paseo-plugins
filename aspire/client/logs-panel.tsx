@@ -2,14 +2,14 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginClientContext, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import { openExternalUrl } from "@getpaseo/plugin/client";
 import { copyText, FlatList, ScrollView, TextInput } from "@getpaseo/plugin/client/react-native";
-import { useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import type { FlatList as NativeFlatList, NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 import { Platform, Pressable, Text, View } from "react-native";
 import type { AspireResource, LogLine } from "../shared/aspire";
 import { aspireLogsRpc, aspireResourcesRpc } from "../shared/aspire";
 import { AnsiSegments, isDarkTheme } from "./ansi-text";
 import { describeError } from "./aspire-popover";
-import { findScrollElement, listenForUserScroll, observeVisibility, type ScrollElement } from "./dom-scroll";
+import { findScrollElement, listenForUserScroll, observeVisibility, offsetInViewport, type ScrollElement } from "./dom-scroll";
 import { logsTarget } from "./logs-target";
 import { MONO, TERMINAL_FONT_SIZE } from "./terminal-font";
 import { isTouchLayout, TouchContext, useTouch } from "./touch";
@@ -23,9 +23,17 @@ const MAX_LINES = 20_000;
 const FOLLOW_SLOP = 24;
 const RESTORE_FRAMES = 6;
 const TAB_SWITCH_REVEAL_FRAMES = 2;
-// Virtualization: render enough rows to fill a tall viewport up front, then large batches, so placing the list at
-// the end doesn't show rows trickling in. Only a few screens' worth of rows stay mounted.
-const INITIAL_ROWS = 80;
+// A tab shows only its latest lines at first, so it opens at the bottom without rendering its whole history; older
+// lines are added in chunks when the user scrolls up to them.
+const TAIL_ROWS = 300;
+const OLDER_ROWS = 500;
+// On web, how close to the top of the list (in px) scrolling has to get before older lines are added.
+const OLDER_TRIGGER_PX = 400;
+const ANCHOR_FRAMES = 12;
+// Virtualization: the web list renders from its first row, so render the whole tail up front and placing it at the
+// end doesn't show rows trickling in. The inverted native list starts at the newest line, so a screenful is enough.
+// After that, large batches; only a few screens' worth of rows stay mounted.
+const INITIAL_ROWS = Platform.OS === "web" ? TAIL_ROWS : 80;
 const BATCH_ROWS = 200;
 const WINDOW_SCREENS = 7;
 const USER_SCROLL_WINDOW_MS = 1_000;
@@ -60,6 +68,37 @@ function Badge({ label, color }: { label: string; color: string }) {
     </View>
   );
 }
+
+const rowId = (seq: number) => `aspire-log-${seq}`;
+
+type LogRowProps = {
+  line: LogLine;
+  number: number;
+  /** Line numbers in a single resource's tab; null in the combined view, which shows resource badges instead. */
+  gutterWidth: number | null;
+  badgeColor: string | null;
+  showTimestamp: boolean;
+  theme: PluginTheme;
+  dark: boolean;
+  onOpenUrl(url: string): void;
+};
+
+// Memoized so the panel re-rendering on every poll doesn't re-render every mounted row.
+const LogRow = memo(function LogRow({ line, number, gutterWidth, badgeColor, showTimestamp, theme, dark, onOpenUrl }: LogRowProps) {
+  return (
+    <View nativeID={rowId(line.seq)} style={{ flexDirection: "row", alignItems: "flex-start", gap: 6, paddingVertical: 1 }}>
+      {gutterWidth === null ? null : (
+        <Text style={[lineText, { minWidth: gutterWidth, textAlign: "right", color: theme.colors.foregroundMuted }]}>{number}</Text>
+      )}
+      {showTimestamp ? <Text style={[lineText, { color: theme.colors.foregroundMuted }]}>{time(line.timestamp) || "        "}</Text> : null}
+      {badgeColor === null ? null : <Badge label={line.resource} color={badgeColor} />}
+      {line.stderr ? <Badge label="stderr" color={STDERR_BADGE} /> : null}
+      <Text selectable style={[lineText, { flex: 1, color: theme.colors.foreground }]}>
+        <AnsiSegments segments={line.segments} theme={theme} dark={dark} onOpenUrl={onOpenUrl} />
+      </Text>
+    </View>
+  );
+});
 
 function stateColor(theme: PluginTheme, resource: AspireResource) {
   if (resource.state === "FailedToStart" || resource.health === "Unhealthy") return theme.colors.statusDanger;
@@ -133,6 +172,11 @@ type Feed = {
 type TabView = {
   following: boolean;
   offset: number;
+  /**
+   * `seq` of the oldest line shown. Null shows the latest `TAIL_ROWS`, sliding as lines arrive (while following);
+   * otherwise the start stays put so what the user is reading doesn't move.
+   */
+  windowStart: number | null;
   /** Lines with `seq` at or below this were cleared from this tab. */
   clearedThrough: number;
 };
@@ -171,7 +215,7 @@ export function createLogsPanel(client: PluginClientContext) {
     const key = resource ?? "*";
     let tab = view.tabs.get(key);
     if (!tab) {
-      tab = { following: true, offset: 0, clearedThrough: 0 };
+      tab = { following: true, offset: 0, windowStart: null, clearedThrough: 0 };
       view.tabs.set(key, tab);
     }
     return tab;
@@ -215,7 +259,15 @@ export function createLogsPanel(client: PluginClientContext) {
       change();
       rerender();
     };
-    const setFollowing = (value: boolean) => update(() => (tab.following = value));
+    // The rows currently in the list (the tab's window), for handlers defined before they're computed.
+    const shownRef = useRef<Row[]>([]);
+    const setFollowing = (value: boolean) =>
+      update(() => {
+        tab.following = value;
+        // Following shows the latest lines; stopping pins the current start so arriving lines don't trim what's
+        // on screen.
+        tab.windowStart = value ? null : (shownRef.current[0]?.line.seq ?? null);
+      });
 
     const scrollToBottom = () => {
       const element = scrollElement.current;
@@ -290,7 +342,12 @@ export function createLogsPanel(client: PluginClientContext) {
           const reset = next.generation !== feed.generation;
           feed.generation = next.generation;
           feed.cursor = next.cursor;
-          if (reset) for (const stale of view.tabs.values()) stale.clearedThrough = 0;
+          if (reset) {
+            for (const stale of view.tabs.values()) {
+              stale.clearedThrough = 0;
+              stale.windowStart = null;
+            }
+          }
           if (reset || next.lines.length) {
             const merged = reset ? next.lines : feed.lines.concat(next.lines);
             feed.lines = merged.length > MAX_LINES ? merged.slice(-MAX_LINES) : merged;
@@ -322,6 +379,57 @@ export function createLogsPanel(client: PluginClientContext) {
       return needle ? numbered.filter((row) => row.line.text.toLowerCase().includes(needle)) : numbered;
     }, [lines, resource, selectedName, clearedThrough, filter]);
 
+    const { windowStart } = tab;
+    const shown = useMemo(() => {
+      const tail = Math.max(0, rows.length - TAIL_ROWS);
+      const start = windowStart === null ? tail : rows.findIndex((row) => row.line.seq >= windowStart);
+      return rows.slice(start < 0 ? tail : start);
+    }, [rows, windowStart]);
+    shownRef.current = shown;
+    const hasOlder = shown.length < rows.length;
+    const loadingOlder = useRef(false);
+
+    /** Adds the next chunk of older lines above the window. */
+    const loadOlder = () => {
+      const first = shown[0];
+      if (!hasOlder || !first || loadingOlder.current) return;
+      const index = rows.indexOf(first);
+      const start = rows[Math.max(0, index - OLDER_ROWS)];
+      const element = scrollElement.current;
+      update(() => (tab.windowStart = start.line.seq));
+      // The inverted native list adds them past its far end, so nothing on screen moves.
+      if (INVERTED || !element) return;
+      // On web they go above what's on screen. The virtualized list doesn't keep the visible rows in place (it renders
+      // by index, and every index just shifted), so put the previously first row back where it was over a few frames,
+      // estimating its position from the average row height until it has rendered.
+      const id = rowId(first.line.seq);
+      const before = offsetInViewport(element, id);
+      const added = index - rows.indexOf(start);
+      const estimate = element.scrollTop + added * (element.scrollHeight / Math.max(1, shown.length));
+      loadingOlder.current = true;
+      restoring.current = true;
+      let frames = 0;
+      let settled = 0;
+      const step = () => {
+        const now = offsetInViewport(element, id);
+        if (now === null || before === null) element.scrollTop = estimate;
+        else if (Math.abs(now - before) < 1) settled += 1;
+        else {
+          element.scrollTop += now - before;
+          settled = 0;
+        }
+        frames += 1;
+        if (frames < ANCHOR_FRAMES && settled < 2) {
+          requestAnimationFrame(step);
+          return;
+        }
+        tab.offset = lastOffset.current = element.scrollTop;
+        restoring.current = false;
+        loadingOlder.current = false;
+      };
+      requestAnimationFrame(step);
+    };
+
     const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
       // A hidden panel reports a zero-height viewport and a reset offset; that isn't the user scrolling.
@@ -332,6 +440,8 @@ export function createLogsPanel(client: PluginClientContext) {
       if (!revealed || restoring.current) return;
       if (userBusy()) holdAutoScroll();
       tab.offset = contentOffset.y;
+      // The inverted native list loads older lines through `onEndReached` instead.
+      if (!INVERTED && hasOlder && contentOffset.y < OLDER_TRIGGER_PX) loadOlder();
       const fromBottom = INVERTED ? contentOffset.y : contentSize.height - (contentOffset.y + layoutMeasurement.height);
       if (fromBottom <= FOLLOW_SLOP) {
         if (!tab.following) setFollowing(true);
@@ -412,7 +522,7 @@ export function createLogsPanel(client: PluginClientContext) {
     const onContentSizeChange = () => {
       if (!INVERTED && revealed && following && !hidden.current && !userBusy()) scrollToBottom();
     };
-    const listRows = useMemo(() => (INVERTED ? rows.slice().reverse() : rows), [rows]);
+    const listRows = useMemo(() => (INVERTED ? shown.slice().reverse() : shown), [shown]);
 
     const copyVisible = () => {
       void copyText(rows.map(({ line }) => (resource ? line.text : `[${line.resource}] ${line.text}`)).join("\n")).catch(() => {});
@@ -434,7 +544,9 @@ export function createLogsPanel(client: PluginClientContext) {
       }
       return RESOURCE_BADGES[index % RESOURCE_BADGES.length];
     };
-    const openUrl = (url: string) => void openExternalUrl(url).catch((e: unknown) => setError(describeError(e)));
+    const openUrl = useCallback((url: string) => void openExternalUrl(url).catch((e: unknown) => setError(describeError(e))), []);
+    // Sits above the oldest shown line (the list's header on web, the footer of the flipped native list).
+    const olderNotice = hasOlder ? <Text style={[muted, { paddingBottom: 6 }]}>Loading earlier lines…</Text> : null;
 
     return (
       <TouchContext.Provider value={touch}>
@@ -526,18 +638,21 @@ export function createLogsPanel(client: PluginClientContext) {
                   ...(INVERTED ? { flexGrow: 1, justifyContent: "flex-end" } : null),
                 }}
                 ListEmptyComponent={<Text style={muted}>{filter ? "No matching lines." : "No log output yet."}</Text>}
-                renderItem={({ item: { line: item, number } }) => (
-                  <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6, paddingVertical: 1 }}>
-                    {resource === null ? null : (
-                      <Text style={[lineText, { minWidth: gutterWidth, textAlign: "right", color: theme.colors.foregroundMuted }]}>{number}</Text>
-                    )}
-                    {showTimestamps ? <Text style={[lineText, { color: theme.colors.foregroundMuted }]}>{time(item.timestamp) || "        "}</Text> : null}
-                    {resource === null ? <Badge label={item.resource} color={badgeColorFor(item.resource)} /> : null}
-                    {item.stderr ? <Badge label="stderr" color={STDERR_BADGE} /> : null}
-                    <Text selectable style={[lineText, { flex: 1, color: theme.colors.foreground }]}>
-                      <AnsiSegments segments={item.segments} theme={theme} dark={dark} onOpenUrl={openUrl} />
-                    </Text>
-                  </View>
+                ListHeaderComponent={INVERTED ? null : olderNotice}
+                ListFooterComponent={INVERTED ? olderNotice : null}
+                onEndReached={INVERTED ? loadOlder : undefined}
+                onEndReachedThreshold={1}
+                renderItem={({ item: { line, number } }) => (
+                  <LogRow
+                    line={line}
+                    number={number}
+                    gutterWidth={resource === null ? null : gutterWidth}
+                    badgeColor={resource === null ? badgeColorFor(line.resource) : null}
+                    showTimestamp={showTimestamps}
+                    theme={theme}
+                    dark={dark}
+                    onOpenUrl={openUrl}
+                  />
                 )}
               />
               {loaded ? null : (

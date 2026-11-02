@@ -6,9 +6,12 @@ import { normalizePath } from "./state";
 
 const START_TIMEOUT_MS = 10 * 60_000;
 const STOP_TIMEOUT_MS = 2 * 60_000;
-const DESCRIBE_TIMEOUT_MS = 30_000;
 const RESOURCE_COMMAND_TIMEOUT_MS = 2 * 60_000;
-const RESOURCES_CACHE_MS = 2_000;
+// Resource watches outlive a closed popover, but not a client that stopped asking.
+const RESOURCE_WATCH_IDLE_MS = 5 * 60_000;
+// `describe --follow` sends the snapshot as a burst; resources() waits for it rather than returning a partial list.
+const SNAPSHOT_QUIET_MS = 150;
+const SNAPSHOT_MAX_MS = 3_000;
 const LOGIN_URL = /https?:\/\/[^\s"'<>]+\/login\?t=[^\s"'<>]+/i;
 const LOG_PATH = /(?:[A-Za-z]:\\|\/)[^\s"'<>]+\.log\b/;
 
@@ -22,7 +25,6 @@ const launches = new Map<string, Launch>();
 const failures = new Map<string, Failure>();
 const stopping = new Set<string>();
 const loginUrls = new Map<string, string>();
-const resourceCache = new Map<string, { at: number; value: Promise<AspireResources> }>();
 
 let disposeFollow: (() => void) | null = null;
 
@@ -47,7 +49,7 @@ function forget(key: string) {
   processes.delete(key);
   running.delete(key);
   loginUrls.delete(key);
-  resourceCache.delete(key);
+  stopWatchingResources(key);
 }
 
 function onPsObject(value: unknown) {
@@ -163,31 +165,73 @@ export async function restart(appHostPath: string): Promise<AspireStatus> {
   return start(appHostPath);
 }
 
-export function resources(appHostPath: string): Promise<AspireResources> {
+/**
+ * The app host's resources, from one long-lived `aspire describe --follow` per running app host. Every CLI call
+ * leaves a log file in `~/.aspire/logs` and a connection in the app host's log, so resources are never polled: the
+ * stream sends each resource once, then the resource again whenever it changes.
+ */
+export async function resources(appHostPath: string): Promise<AspireResources> {
   ensureFollowing();
   const key = normalizePath(appHostPath);
   const entry = running.get(key);
-  if (!entry) return Promise.resolve({ resources: [], error: null });
-  const cached = resourceCache.get(key);
-  if (cached && Date.now() - cached.at < RESOURCES_CACHE_MS) return cached.value;
-  const value = describe(entry.appHostPath);
-  resourceCache.set(key, { at: Date.now(), value });
-  return value;
+  if (!entry) return { resources: [], error: null };
+  let watch = resourceWatches.get(key);
+  if (!watch) resourceWatches.set(key, (watch = watchResources(entry.appHostPath)));
+  watch.lastRead = Date.now();
+  sweeper ??= setInterval(sweepResourceWatches, RESOURCE_WATCH_IDLE_MS / 2);
+  await watch.ready;
+  return { resources: [...watch.resources.values()], error: null };
 }
 
-async function describe(appHostPath: string): Promise<AspireResources> {
-  try {
-    const { code, stdout, stderr } = await runAspire(["describe", "--apphost", appHostPath, "--format", "Json"], {
-      cwd: dirname(appHostPath),
-      timeoutMs: DESCRIBE_TIMEOUT_MS,
-    });
-    if (code !== 0) return { resources: [], error: summarize(`${stdout}\n${stderr}`, code) };
-    const json = stdout.slice(stdout.indexOf("{"));
-    const parsed = JSON.parse(json) as { resources?: unknown };
-    const list = Array.isArray(parsed.resources) ? parsed.resources : [];
-    return { resources: list.map(toResource).filter((r): r is AspireResource => r !== null && r.state !== "Hidden"), error: null };
-  } catch (error) {
-    return { resources: [], error: error instanceof Error ? error.message : String(error) };
+type ResourceWatch = {
+  resources: Map<string, AspireResource>;
+  /** Resolves once the initial snapshot has arrived (or the wait for it gave up). */
+  ready: Promise<void>;
+  lastRead: number;
+  dispose(): void;
+};
+
+const resourceWatches = new Map<string, ResourceWatch>();
+let sweeper: ReturnType<typeof setInterval> | null = null;
+
+function watchResources(appHostPath: string): ResourceWatch {
+  let markReady!: () => void;
+  let quiet: ReturnType<typeof setTimeout> | null = null;
+  const ready = new Promise<void>((resolve) => (markReady = resolve));
+  // The snapshot arrives as one burst with no end marker; take a short pause after it as the end.
+  const empty = setTimeout(markReady, SNAPSHOT_MAX_MS);
+  const watch: ResourceWatch = { resources: new Map(), ready, lastRead: Date.now(), dispose: () => {} };
+  const stop = followAspire(
+    ["describe", "--apphost", appHostPath, "--format", "Json", "--follow"],
+    (value) => {
+      const resource = toResource(value);
+      if (!resource) return;
+      if (resource.state === "Hidden") watch.resources.delete(resource.name);
+      else watch.resources.set(resource.name, resource);
+      if (quiet) clearTimeout(quiet);
+      quiet = setTimeout(markReady, SNAPSHOT_QUIET_MS);
+    },
+    // A reconnect replays every resource, so start from nothing.
+    () => watch.resources.clear(),
+    dirname(appHostPath),
+  );
+  watch.dispose = () => {
+    clearTimeout(empty);
+    if (quiet) clearTimeout(quiet);
+    markReady();
+    stop();
+  };
+  return watch;
+}
+
+function stopWatchingResources(key: string) {
+  resourceWatches.get(key)?.dispose();
+  resourceWatches.delete(key);
+}
+
+function sweepResourceWatches() {
+  for (const [key, watch] of resourceWatches) {
+    if (Date.now() - watch.lastRead > RESOURCE_WATCH_IDLE_MS) stopWatchingResources(key);
   }
 }
 
@@ -232,8 +276,6 @@ export async function runResourceCommand(appHostPath: string, resource: string, 
     cwd: dirname(appHostPath),
     timeoutMs: RESOURCE_COMMAND_TIMEOUT_MS,
   });
-  // The resource's state changed; don't serve the pre-command snapshot.
-  resourceCache.delete(key);
   if (code !== 0) throw new Error(summarize(`${stdout}\n${stderr}`, code));
 }
 
@@ -251,4 +293,7 @@ export function disposeMonitor() {
   disposeFollow = null;
   processes.clear();
   running.clear();
+  for (const key of [...resourceWatches.keys()]) stopWatchingResources(key);
+  if (sweeper) clearInterval(sweeper);
+  sweeper = null;
 }

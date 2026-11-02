@@ -49,8 +49,11 @@ export function runAspire(args: readonly string[], { cwd, timeoutMs }: { cwd?: s
   });
 }
 
-/** Runs a `--follow` command for as long as the plugin lives, reconnecting with backoff. Each JSON line goes to `onObject`. */
-export function followAspire(args: readonly string[], onObject: (value: unknown) => void, onRestart: () => void) {
+/**
+ * Runs a `--follow` command until disposed, reconnecting with backoff. Each JSON line goes to `onObject`; `onRestart`
+ * runs before a reconnect, which replays the command's initial output.
+ */
+export function followAspire(args: readonly string[], onObject: (value: unknown) => void, onRestart: () => void, cwd?: string) {
   let disposed = false;
   let child: ChildProcess | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -60,7 +63,7 @@ export function followAspire(args: readonly string[], onObject: (value: unknown)
     if (disposed) return;
     const startedAt = Date.now();
     let pending = "";
-    child = spawnAspire(args, undefined);
+    child = spawnAspire(args, cwd);
     child.stdout!.on("data", (chunk: Buffer) => {
       pending += chunk.toString("utf8");
       let newline = pending.indexOf("\n");

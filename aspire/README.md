@@ -37,7 +37,7 @@ Everything goes through the Aspire CLI on the daemon machine:
 
 - **Running app hosts:** one long-lived `aspire ps --format Json --follow` stream. This includes app hosts started outside Paseo, for example from a terminal.
   - A one-shot `aspire ps` (without `--follow`) stops "orphaned" app hosts as a side effect, so the plugin never runs it.
-- **Resources:** `aspire describe --apphost <path> --format Json`, polled while the popover is open and cached for two seconds.
+- **Resources:** one long-lived `aspire describe --apphost <path> --format Json --follow` per running app host, which sends each resource again whenever it changes. Resources are never polled from the CLI: every CLI run writes a log file to `~/.aspire/logs` and opens a connection to the app host.
 - **Logs:** one `aspire logs --apphost <path> --format Json --follow -n 2000 -t` per app host, covering every resource and buffered on the daemon (up to 20,000 lines). Like the Aspire dashboard, resource tabs filter this one stream on the client, so switching tabs needs no loading. The backlog the CLI replays on connect is held back until it has all arrived (the stream goes quiet briefly), and the panel's first read waits for it, so it arrives in one piece. After that the panel polls every second with a cursor. A stream nobody has read for five minutes is shut down.
 - **Start, stop and restart:** `aspire start --apphost <path>` and `aspire stop --apphost <path>`.
 - **Archiving:** archiving a workspace stops its running app host.
