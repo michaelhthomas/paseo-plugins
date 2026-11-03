@@ -28,6 +28,8 @@ import {
 import { useDisplaySettings } from "./display-settings";
 import { usePanelMenu, type MenuEntry } from "./menu";
 import { useOverlayScrollbar } from "./overlay-scrollbar";
+import { useColumnWidth } from "./column-width";
+import { rowOffsets, type RowLayout } from "./row-layout";
 import { useRepo, type RepoStore } from "./repo-store";
 import { useSyntaxColors } from "./syntax-theme";
 import { splitPath } from "./theme";
@@ -39,6 +41,10 @@ export const DIFF_PANEL_ID = "git-diff";
 const MAX_REVEAL = 2_000;
 
 type RowOf<Kind extends Row["kind"]> = Extract<Row, { kind: Kind }>;
+
+/** The last line of a gap one `git.lines` request reveals, and that request's key for the diff's version. */
+const revealEnd = (row: RowOf<"gap">) => Math.min(row.end, row.start + MAX_REVEAL - 1);
+const revealRequest = (row: RowOf<"gap">) => `${row.key}@${row.diff.newSideHash}:${row.start}-${revealEnd(row)}`;
 
 type KeyEvent = {
   key: string;
@@ -64,6 +70,9 @@ type ListHandlers = {
 
 const listStyles = StyleSheet.create({ list: { flex: 1 }, content: { paddingBottom: 32 } });
 const rowKey = (row: Row) => row.id;
+const NO_ROWS: Row[] = [];
+// About how long a smooth scroll runs; another key press sooner than this jumps instead of piling up animations.
+const SCROLL_ANIMATION_MS = 300;
 
 /**
  * The diff's rows. Memoized, and given only values that change when the shown rows do, so the panel can re-render
@@ -78,6 +87,8 @@ const DiffList = memo(function DiffList({
   listHandlers,
   listRef,
   listProps,
+  layout,
+  initialIndex,
 }: {
   rows: Row[];
   theme: PluginTheme;
@@ -87,7 +98,16 @@ const DiffList = memo(function DiffList({
   listHandlers: ListHandlers;
   listRef: RefObject<NativeFlatList<Row> | null>;
   listProps: object;
+  /** Where rows sit, worked out up front; null where text can't be measured (iOS and Android), so the list measures. */
+  layout: RowLayout | null;
+  /** The row to open at, when the list is made; needs `layout`. */
+  initialIndex: number | null;
 }) {
+  const offsets = useMemo(() => (layout ? rowOffsets(rows, layout) : null), [rows, layout]);
+  const getItemLayout = useMemo(
+    () => (offsets ? (_: unknown, index: number) => ({ length: offsets[index + 1] - offsets[index], offset: offsets[index], index }) : undefined),
+    [offsets],
+  );
   const renderItem = useCallback(
     ({ item }: { item: Row }) => {
       switch (item.kind) {
@@ -120,11 +140,13 @@ const DiffList = memo(function DiffList({
       data={rows}
       keyExtractor={rowKey}
       renderItem={renderItem}
+      getItemLayout={getItemLayout}
+      initialScrollIndex={getItemLayout && initialIndex !== null ? initialIndex : undefined}
       // About a screen first, then small batches, and a short window either side: switching files mounts and
       // unmounts every one of these rows, so fewer of them is faster.
       initialNumToRender={40}
       maxToRenderPerBatch={20}
-      windowSize={3}
+      windowSize={5}
       contentContainerStyle={listStyles.content}
       onScrollToIndexFailed={onScrollToIndexFailed}
     />
@@ -159,6 +181,7 @@ export function createDiffPanel(store: RepoStore) {
     const focus = useRef(createBlockFocus()).current;
     // Set by keyboard moves: scroll the cursor's change into view once it's on screen.
     const scrollPending = useRef(false);
+    const lastScroll = useRef(0);
     const { status, statusError } = state;
     const split = settings.diffLayout === "split";
     // Unwrapped lines scroll sideways, which only the web list can do.
@@ -195,19 +218,59 @@ export function createDiffPanel(store: RepoStore) {
     // Rows follow the cursor through the focus store, not props.
     useLayoutEffect(() => focus.set({ active }), [active, focus]);
 
+    // With unchanged lines not collapsed, every gap in the shown file is revealed (below), a request's worth at a time.
+    // Each range is asked for once per version of the diff, so a failure isn't retried on every render.
+    const requested = useRef(new Set<string>());
+    const [revealing, setRevealing] = useState(0);
+    // Lines are still to be revealed above or among the changes, which would move them.
+    const unrevealed = !settings.collapseUnchanged && (revealing > 0 || rows.some((row) => row.kind === "gap" && !requested.current.has(revealRequest(row))));
+
+    // A file is drawn once it's complete: its diff loaded and, with unchanged lines not collapsed, every hidden line
+    // revealed. Until then the list keeps the last complete rows (none the first time), so a file
+    // never draws collapsed and then jumps as its lines arrive.
+    const complete = !unrevealed && !rows.some((row) => row.kind === "notice" && row.id.endsWith("|loading"));
+    const lastComplete = useRef<Row[] | null>(null);
+    if (complete) lastComplete.current = rows;
+    const ready = complete ? rows : (lastComplete.current ?? NO_ROWS);
+
     // The list renders a deferred copy of the rows. Rendering a file's rows is the slow part of switching files, and a
     // deferred render can be interrupted: holding j or l moves through files at key-repeat speed, the header keeping up,
     // and the list draws the file it stops on rather than every file passed on the way.
-    const shownRows = useDeferredValue(rows);
+    const shownRows = useDeferredValue(ready);
     const digits = useMemo(() => shownRows.reduce((max, row) => ("digits" in row ? Math.max(max, row.digits) : max), 1), [shownRows]);
     const columns = useMemo(() => (wrap ? { left: 0, right: 0 } : maxColumns(shownRows)), [wrap, shownRows]);
     const codeScroll = useCodeScroll({ enabled: !wrap, split, viewport, digits, columns, resetKey: key });
     const frame = useMemo<DiffFrame>(() => ({ wrap, split, scrolls: codeScroll.enabled }), [wrap, split, codeScroll.enabled]);
+    const columnWidth = useColumnWidth();
+    const layout = useMemo<RowLayout | null>(
+      () => (Platform.OS === "web" ? { wrap, split, viewport, columnWidth } : null),
+      // Unwrapped rows don't depend on the width, so resizing the panel needn't lay them out again.
+      [wrap, split, wrap ? viewport : 0, columnWidth],
+    );
 
-    // Another file reaching the list starts at its top. Scrolling only then, not on every key press, keeps rapid
-    // switching from re-rendering the outgoing file.
+    // Another file reaching the list opens on the cursor's change (its first, unless stepped back into from the next
+    // file). The list is made afresh for each file, starting at that row, so its first paint already shows it: no
+    // scroll, and no blank frame while rows render at a scrolled-to position. Scrolling only then, not on every key
+    // press, keeps rapid switching from re-rendering the outgoing file.
     const shownKey = shownRows[0]?.kind === "section" ? shownRows[0].key : null;
-    useEffect(() => list.current?.scrollToOffset({ offset: 0, animated: false }), [shownKey]);
+    const listHeight = useRef(0);
+    const openAt = useMemo(() => {
+      const index = shownRows.findIndex((row) => (row.kind === "line" || row.kind === "split") && row.blockStart && row.block?.id === active);
+      if (index < 0 || !layout) return null;
+      // A little above the change, like the scrolls to it (`viewPosition` 0.1).
+      const offsets = rowOffsets(shownRows, layout);
+      let start = index;
+      while (start > 0 && offsets[index] - offsets[start - 1] <= listHeight.current * 0.1) start--;
+      return start;
+      // Only for the file reaching the list.
+    }, [shownKey]);
+    // The file the list last scrolled in; the first scroll in another file jumps.
+    const scrolledKey = useRef<string | null>(null);
+    useLayoutEffect(() => {
+      // Opened at its change, or (its blocks not known yet) left for the scroll below.
+      scrolledKey.current = openAt === null ? null : shownKey;
+      scrollPending.current = openAt === null;
+    }, [shownKey]);
 
     const show = useCallback(
       (next: DiffCursor) => {
@@ -219,24 +282,32 @@ export function createDiffPanel(store: RepoStore) {
       [items, key, workspaceId],
     );
 
-    // A file opened from the Changes panel: show it from the top and take the keyboard.
+    // A file opened from the Changes panel: show its first change, straight away, and take the keyboard.
     useEffect(() => {
       if (state.focus === null) return;
       setCursor({ path: itemKey(state.focus), id: null, position: 0 });
-      list.current?.scrollToOffset({ offset: 0, animated: false });
+      scrolledKey.current = null;
+      scrollPending.current = true;
       // Without scrolling the app to it.
       (menu.rootRef.current as { focus?(options?: object): void } | null)?.focus?.({ preventScroll: true });
       store.clearFocus(workspaceId);
     }, [state.focus, workspaceId]);
 
     useEffect(() => {
-      // Once the list shows the current rows.
-      if (!scrollPending.current || active === null || shownRows !== rows) return;
+      // Once the list shows the current rows, and they're done moving.
+      if (!scrollPending.current || active === null || shownRows !== rows || unrevealed) return;
       const index = shownRows.findIndex((row) => (row.kind === "line" || row.kind === "split") && row.blockStart && row.block?.id === active);
       if (index < 0) return;
       scrollPending.current = false;
-      requestAnimationFrame(() => list.current?.scrollToIndex({ index, animated: true, viewPosition: 0.1 }));
-    }, [active, rows, shownRows]);
+      const now = Date.now();
+      const animated = scrolledKey.current === shownKey && now - lastScroll.current > SCROLL_ANIMATION_MS;
+      scrolledKey.current = shownKey;
+      lastScroll.current = now;
+      const scroll = () => list.current?.scrollToIndex({ index, animated, viewPosition: 0.1 });
+      // A jump goes now, with the reset to the top, so the top of the file never shows first.
+      if (animated) requestAnimationFrame(scroll);
+      else scroll();
+    }, [active, rows, shownRows, shownKey, unrevealed]);
 
     const discardFiles = useCallback(
       (entries: StatusEntry[]) =>
@@ -340,18 +411,15 @@ export function createDiffPanel(store: RepoStore) {
       [actions],
     );
 
-    // With unchanged lines not collapsed, reveal every gap in the shown file, a request's worth at a time. Each range is
-    // asked for once per version of the diff, so a failure isn't retried on every render.
-    const requested = useRef(new Set<string>());
     useEffect(() => {
       if (settings.collapseUnchanged) return;
       for (const row of rows) {
         if (row.kind !== "gap") continue;
-        const end = Math.min(row.end, row.start + MAX_REVEAL - 1);
-        const request = `${row.key}@${row.diff.newSideHash}:${row.start}-${end}`;
+        const request = revealRequest(row);
         if (requested.current.has(request)) continue;
         requested.current.add(request);
-        void actions.expand(row.diff, row.start, end);
+        setRevealing((count) => count + 1);
+        void actions.expand(row.diff, row.start, revealEnd(row)).finally(() => setRevealing((count) => count - 1));
       }
     }, [settings.collapseUnchanged, rows, actions]);
     // Collapsing again hides what was revealed.
@@ -433,10 +501,15 @@ export function createDiffPanel(store: RepoStore) {
         <View
           ref={codeScroll.attach as never}
           style={listStyles.list}
-          onLayout={(event: LayoutChangeEvent) => setViewport(event.nativeEvent.layout.width)}
+          onLayout={(event: LayoutChangeEvent) => {
+            setViewport(event.nativeEvent.layout.width);
+            listHeight.current = event.nativeEvent.layout.height;
+          }}
           {...({ onWheel: codeScroll.onWheel } as object)}
         >
           <DiffList
+            key={shownKey ?? ""}
+            initialIndex={openAt}
             rows={shownRows}
             theme={theme}
             colors={colors}
@@ -445,6 +518,7 @@ export function createDiffPanel(store: RepoStore) {
             listHandlers={listHandlers}
             listRef={list}
             listProps={scrollbar.listProps}
+            layout={layout}
           />
           {scrollbar.overlay}
           <CodeScrollbars theme={theme} scroll={codeScroll} />

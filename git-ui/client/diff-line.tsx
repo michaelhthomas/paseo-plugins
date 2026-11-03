@@ -9,15 +9,16 @@ import type { SyntaxColors } from "./syntax-theme";
 import { useBlockFocus, type BlockFocus } from "./block-focus";
 import { SHIFTED_CODE } from "./code-scroll";
 import { CODE_PADDING_RIGHT, gutterWidth, LINE_HEIGHT, SIGN_WIDTH, SPLIT_DIVIDER } from "./diff-metrics";
+import { GAP_HEIGHT, NOTICE_HEIGHT, SECTION_HEIGHT } from "./row-layout";
 import { terminalFont } from "./terminal-font";
 import type { MenuEntry } from "./menu";
 import { Checkbox, DiffStat } from "./tree-parts";
 
 const codeText = { ...terminalFont, lineHeight: LINE_HEIGHT } as const;
-// Web-only styles that react-native-web passes through. Wrapped code may break inside a word that doesn't fit, which
-// also lets it shrink to its column instead of overflowing.
+// Web-only styles that react-native-web passes through. Wrapped code breaks on a strict character grid, anywhere and
+// spaces included, so how many lines it takes follows from its length (row-layout.ts) and the list needn't measure it.
 const noWrapText = { whiteSpace: "pre" } as object;
-const wrapText = { overflowWrap: "anywhere" } as object;
+const wrapText = { whiteSpace: "break-spaces", wordBreak: "break-all" } as object;
 
 type RowOf<Kind extends Row["kind"]> = Extract<Row, { kind: Kind }>;
 
@@ -421,7 +422,7 @@ export const GapRow = memo(function GapRow({
   const hidden = row.end - row.start + 1;
   const small = hidden <= EXPAND_STEP;
   return (
-    <Band frame={frame} style={{ minHeight: 26, backgroundColor: theme.colors.surface1 }}>
+    <Band frame={frame} style={{ height: GAP_HEIGHT, backgroundColor: theme.colors.surface1 }}>
       <View style={{ width: Math.max(labelInset(frame, row.digits), 60), flexDirection: "row", justifyContent: "center", gap: 2 }}>
         {!small && row.up ? <IconButton theme={theme} icon="ArrowUpToLine" size={13} label={`Show ${EXPAND_STEP} lines above`} onPress={() => onExpand(row, "up")} /> : null}
         {!small && row.down ? <IconButton theme={theme} icon="ArrowDownToLine" size={13} label={`Show ${EXPAND_STEP} lines below`} onPress={() => onExpand(row, "down")} /> : null}
@@ -465,7 +466,7 @@ export const SectionRow = memo(function SectionRow({
   const additions = diff && diff.status !== "error" ? diff.additions : count((side) => side.additions);
   const deletions = diff && diff.status !== "error" ? diff.deletions : count((side) => side.deletions);
   return (
-    <Band frame={frame} {...contextMenu(() => menuFor(row))} style={{ minHeight: 36, borderBottomWidth: 1, borderColor: theme.colors.border }}>
+    <Band frame={frame} {...contextMenu(() => menuFor(row))} style={{ height: SECTION_HEIGHT, borderBottomWidth: 1, borderColor: theme.colors.border }}>
       <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 12, paddingRight: 9, minWidth: 0 }}>
         <Text style={{ fontSize: 13, fontWeight: "600", color: theme.colors.foreground }}>{title}</Text>
         {staged?.origPath ? (
@@ -483,9 +484,9 @@ export const SectionRow = memo(function SectionRow({
 
 export function NoticeRow({ theme, row, frame, onForce }: { theme: PluginTheme; row: RowOf<"notice">; frame: DiffFrame; onForce(key: string): void }) {
   return (
-    <Band frame={frame} style={{ backgroundColor: theme.colors.surface1 }}>
-      <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 10 }}>
-        <Text style={{ flex: 1, fontSize: 13, fontStyle: "italic", color: theme.colors.foregroundMuted }}>{row.text}</Text>
+    <Band frame={frame} style={{ height: NOTICE_HEIGHT, backgroundColor: theme.colors.surface1 }}>
+      <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16 }}>
+        <Text numberOfLines={2} style={{ flex: 1, fontSize: 13, fontStyle: "italic", color: theme.colors.foregroundMuted }}>{row.text}</Text>
         {row.force ? <TextButton theme={theme} label="Load anyway" onPress={() => onForce(row.key)} /> : null}
       </View>
     </Band>

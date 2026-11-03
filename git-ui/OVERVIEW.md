@@ -2,7 +2,7 @@ Git UI adds a staging area, commits, and a reviewable diff to every git workspac
 
 ## Git changes panel
 
-A side panel in the explorer shows your changes as file trees laid out like Paseo's own Changes panel, with file icons, line counts per file and folder, and change badges. Each file, folder and group has a checkbox: checked means staged, a dash means partly staged, and pressing it stages or unstages everything it covers. Right-click a row (long-press on touch) to open its diff, stage or unstage, copy its path, or discard changes. Changes appear straight away and are corrected if git disagrees. Pressing a file opens it in the diff. Merge conflicts get their own group at the top; checking one marks it resolved.
+A side panel in the explorer shows your changes as file trees laid out like Paseo's own Changes panel, with file icons, line counts per file and folder, and change badges. Each file, folder and group has a checkbox: checked means staged, a dash means partly staged, and pressing it stages or unstages everything it covers. Right-click a row (long-press on touch) to open its diff, stage or unstage, copy its path, or discard changes. Changes appear straight away and are corrected if git disagrees. Pressing a file opens it in the diff, at its first change. Merge conflicts get their own group at the top; checking one marks it resolved.
 
 The view options button in the header switches between a tree and a flat list, and groups files by nothing, by tracked and untracked, or by staged and unstaged (where a partly staged file appears in both). The choice is saved in the plugin's settings.
 
@@ -34,7 +34,7 @@ The diff options button in the header has the same options as Paseo's own diff:
 - Split view: removed lines on the left, added lines on the right.
 - Collapse unchanged lines: on by default. When off, the diff shows the whole file, and changes are staged the same way.
 - Hide whitespace: diffs ignore changes in whitespace, and a file whose only changes are whitespace says so. Individual changes can't be staged in this mode because they don't match the file byte for byte; whole files still can.
-- Wrap long lines: when off, long lines scroll sideways while line numbers and headers stay in place. In split view the two sides scroll together. Use a horizontal scroll or Shift+wheel, or drag the scrollbar along the bottom of either side. This option is on desktop and web only; iOS and Android always wrap.
+- Wrap long lines: when off, long lines scroll sideways while line numbers and headers stay in place. In split view the two sides scroll together. Use a horizontal scroll or Shift+wheel, or drag the scrollbar along the bottom of either side. When on, lines break at the panel edge, even in the middle of a word. This option is on desktop and web only; iOS and Android always wrap.
 
 The choices are saved in the plugin's settings.
 
