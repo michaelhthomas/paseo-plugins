@@ -1,0 +1,8 @@
+{
+  "id": "work-refs",
+  "name": "Work Item Links",
+  "description": "Shows GitHub (#123) and Azure Boards (AB#123) references in agent replies as linked chips with their titles.",
+  "requirements": {
+    "paseo": ">=0.16.1"
+  }
+}
